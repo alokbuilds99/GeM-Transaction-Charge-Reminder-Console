@@ -11,6 +11,14 @@
   header h1{margin:0;font-size:20px} header p{margin:4px 0 0;font-size:13px;opacity:.85}
   #syncStatus{font-size:12px;margin-top:6px;opacity:1}
   #syncStatus a{color:#fff;opacity:.8}
+  /* lock screen */
+  #lock{position:fixed;inset:0;background:#F2F5F9;display:flex;align-items:center;justify-content:center;z-index:100}
+  body:not(.locked) #lock{display:none}
+  body.locked header, body.locked main{display:none}
+  #lock form{background:#fff;border:1px solid var(--line);border-top:4px solid var(--navy);border-radius:6px;padding:28px 30px;width:360px;max-width:92vw}
+  #lock h2{margin:0 0 6px;font-size:17px;color:var(--navy)}
+  #lock .sub{margin:0 0 16px;font-size:13px;color:#44505F}
+  #lockMsg{color:var(--danger);font-size:12.5px;margin:10px 0 0;min-height:16px}
   main{padding:20px 24px;max-width:1500px;margin:0 auto}
   .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:22px}
   .kpi{background:#fff;border:1px solid var(--line);border-top:4px solid var(--mid);border-radius:6px;padding:12px 14px}
@@ -59,11 +67,21 @@
   #orderBody select.st-Disputed,#orderBody select.st-On\ Hold{background:#FFE2B8;color:var(--warn)}
 </style>
 </head>
-<body>
+<body class="locked">
+<div id="lock">
+  <form id="lockForm">
+    <h2>GeM Transaction Charge Console</h2>
+    <p class="sub">Enter the team password to continue.</p>
+    <input id="pw" type="password" placeholder="Password" autocomplete="current-password" required>
+    <label style="display:flex;gap:6px;align-items:center;margin-top:10px;font-size:12.5px"><input type="checkbox" id="remember" style="width:auto" checked> Remember on this device</label>
+    <button type="submit" style="margin-top:14px;width:100%">Unlock</button>
+    <p id="lockMsg"></p>
+  </form>
+</div>
 <header>
   <h1>GeM Transaction Charge Reminder Console</h1>
   <p>Screenshot-driven OEM order intake · Pay AMC orders only · Reminders start 5 days after the order date</p>
-  <p id="syncStatus">Starting…</p>
+  <p id="syncStatus">Locked</p>
 </header>
 <main>
   <div class="kpis">
@@ -81,7 +99,7 @@
     <h2>Step 1 — Paste GeM Screenshot (Primary Source)</h2>
     <div id="pasteZone" tabindex="0">
       <p class="big">Click here and press Ctrl&nbsp;+&nbsp;V to paste the GeM screenshot</p>
-      <p class="muted">Drag an image in or choose a file below. The screenshot is the primary record and is saved to Google Drive with the order.</p>
+      <p class="muted">Drag an image in or choose a file below. The order details read from it are saved to the shared Sheet.</p>
       <p style="margin-top:10px"><input type="file" id="fileInput" accept="image/*" style="max-width:280px;display:inline-block"></p>
     </div>
     <div id="shotWrap">
@@ -116,7 +134,7 @@
   </section>
   <section>
     <h2>Order Tracker</h2>
-    <p class="muted" style="margin:-6px 0 12px">Every cell is editable — changes save to the shared Google Sheet, so everyone using this link sees them. Change <strong>Status</strong> manually at any time; <em>Paid</em> or <em>Cancelled</em> stops reminders. Editing Order Value recalculates the charge per GeM slab; an amber Charge means it was overridden manually (clear it to go back to the slab).</p>
+    <p class="muted" style="margin:-6px 0 12px">Every cell is editable — changes save automatically to the Google Sheet. Change <strong>Status</strong> manually at any time; <em>Paid</em> or <em>Cancelled</em> stops reminders. Editing Order Value recalculates the charge per GeM slab; an amber Charge means it was overridden manually (clear it to go back to the slab).</p>
     <div class="scroll">
       <table>
         <thead><tr>
@@ -161,96 +179,82 @@
     <h2>Webhook / Automation Hook</h2>
     <div><label>Webhook URL (Power Automate, Teams or mail relay)</label>
       <input id="hookUrl" placeholder="https://prod-XX.westindia.logic.azure.com/workflows/..."></div>
-    <p class="muted" style="margin:10px 0">Only <strong>Pay AMC</strong> orders post a payload, carrying bidNumber, orderId, buyer, buyerLocation, orderDate, reminderStartDate, totalOrderValue, transactionCharge, chargeSlab, dayNumber, stage, status, owner, recipients and the screenshot link. Leave blank to run local-only.</p>
+    <p class="muted" style="margin:10px 0">Only <strong>Pay AMC</strong> orders post a payload, carrying bidNumber, orderId, buyer, buyerLocation, orderDate, reminderStartDate, totalOrderValue, transactionCharge, chargeSlab, dayNumber, stage, status, owner and recipients. Leave blank to run local-only.</p>
     <button class="ghost" id="testHook" type="button">Send Test Payload</button>
     <button class="ghost" id="runSweep" type="button">Run Reminder Sweep Now</button>
     <pre id="hookOut" class="muted" style="white-space:pre-wrap;margin-top:12px"></pre>
   </section>
 </main>
 <script>
-/* ---------- shared Google Sheet (everyone who opens this page uses the same data) ---------- */
+/* ---------- shared, password-protected Google Sheet ---------- */
 const SHEET_URL='https://script.google.com/macros/s/AKfycbxr-30KKgL_zlq0HHTvrTCb62_pT-4g6aaJx7q8iQGNEM131Ye2ET7xT7YAc_Zr5RP8qg/exec';
+let KEY=localStorage.getItem('gemKey')||sessionStorage.getItem('gemKey')||'';
+/* older versions kept a copy of the data in the browser — remove it */
+['gemOrders','gemStakeholders','gemSheetUrl'].forEach(k=>localStorage.removeItem(k));
 
 const defaultStakeholders=()=>Array.from({length:10},(_,i)=>({name:`Stakeholder ${i+1}`,email:`stakeholder${i+1}@company.com`,level:i<7?1:2,active:true}));
 let stakeholders=defaultStakeholders();
 const orders=[];
-let connected=false, busy=0;
-const newUid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
+let sheetReady=false, sheetTimer=null;
+function persistStakeholders(){saveToSheet();}
+function persistOrders(){saveToSheet();}
 
 function setSync(msg,color){
   const e=document.getElementById('syncStatus');
-  e.innerHTML=msg+' · <a href="#" onclick="loadAll();return false">refresh</a>';
+  e.innerHTML=msg+' · <a href="#" onclick="lockNow();return false">lock</a>';
   e.style.color=color||'#fff';
 }
-async function api(body){
-  busy++;
-  try{
-    const r=await fetch(SHEET_URL,{method:'POST',body:JSON.stringify(body)});
-    const d=await r.json();
-    if(!d.ok)throw new Error(d.error||'Sheet did not accept the change');
-    return d;
-  }finally{busy--;}
+function lockNow(){localStorage.removeItem('gemKey');sessionStorage.removeItem('gemKey');location.reload();}
+function saveToSheet(){
+  if(!sheetReady)return;
+  clearTimeout(sheetTimer);
+  setSync('Saving…');
+  sheetTimer=setTimeout(()=>{
+    fetch(SHEET_URL,{method:'POST',mode:'no-cors',
+      body:JSON.stringify({key:KEY,orders:orders.map(o=>({...o,shot:null})),stakeholders})})
+    .then(()=>setSync('✓ Saved to Google Sheet at '+new Date().toLocaleTimeString()))
+    .catch(e=>setSync('⚠ Could not save — check your internet ('+e.message+')','#FFD27A'));
+  },800);
 }
-async function loadAll(){
-  setSync('Loading from Google Sheet…');
-  try{
-    const d=await (await fetch(SHEET_URL)).json();
-    orders.splice(0,orders.length,...d.orders);
-    if(d.stakeholders.length)stakeholders=d.stakeholders;
-    connected=true;
-    renderStakeholders();
-    setSync('✓ Connected to Google Sheet — '+orders.length+' orders');
-  }catch(e){
-    connected=false;
-    setSync('⚠ Could not reach Google Sheet — changes cannot be saved. Check your internet and refresh.','#FFD27A');
+async function unlock(key){
+  const d=await (await fetch(SHEET_URL+'?key='+encodeURIComponent(key))).json();
+  if(d.error)return false;
+  orders.splice(0,orders.length,...d.orders);
+  if(d.stakeholders.length)stakeholders=d.stakeholders;
+  return true;
+}
+function showLock(msg){
+  document.body.classList.add('locked');
+  document.getElementById('lockMsg').textContent=msg||'';
+  document.getElementById('pw').focus();
+}
+function openConsole(){
+  document.body.classList.remove('locked');
+  sheetReady=true;
+  renderStakeholders(); applyCharge();
+  setSync('✓ Connected to Google Sheet — '+orders.length+' orders loaded');
+}
+async function start(){
+  if(KEY){
+    try{ if(await unlock(KEY)) return openConsole(); }
+    catch(e){ return showLock('Could not reach the server — check your internet and refresh.'); }
+    KEY=''; localStorage.removeItem('gemKey'); sessionStorage.removeItem('gemKey');
   }
+  showLock('');
 }
-function needConnection(){
-  if(connected)return true;
-  alert('Not connected to the Google Sheet, so this change cannot be saved. Refresh the page and try again.');
-  return false;
-}
-const saveTimers={};
-function saveOrder(o){
-  setSync('Saving…');
-  clearTimeout(saveTimers[o.uid]);
-  saveTimers[o.uid]=setTimeout(()=>{
-    delete saveTimers[o.uid];
-    api({action:'upsert',order:o})
-      .then(()=>setSync('✓ Saved to Google Sheet at '+new Date().toLocaleTimeString()))
-      .catch(e=>setSync('⚠ Save failed ('+e.message+') — refresh and redo the last change','#FFD27A'));
-  },600);
-}
-let stakeTimer=null;
-function persistStakeholders(){
-  if(!connected){setSync('⚠ Not connected — stakeholder changes were not saved','#FFD27A');return;}
-  setSync('Saving…');
-  clearTimeout(stakeTimer);
-  stakeTimer=setTimeout(()=>{
-    stakeTimer=null;
-    api({action:'stakeholders',stakeholders})
-      .then(()=>setSync('✓ Saved to Google Sheet at '+new Date().toLocaleTimeString()))
-      .catch(e=>setSync('⚠ Save failed ('+e.message+')','#FFD27A'));
-  },600);
-}
-/* pick up other people's changes whenever you come back to this tab */
-document.addEventListener('visibilitychange',()=>{
-  if(document.visibilityState==='visible'&&connected&&!busy&&!Object.keys(saveTimers).length&&!stakeTimer)loadAll();
+document.getElementById('lockForm').addEventListener('submit',async e=>{
+  e.preventDefault();
+  const pw=document.getElementById('pw').value, msg=document.getElementById('lockMsg'), btn=e.target.querySelector('button');
+  btn.disabled=true; msg.textContent='Checking…';
+  try{
+    if(await unlock(pw)){
+      KEY=pw;
+      (document.getElementById('remember').checked?localStorage:sessionStorage).setItem('gemKey',pw);
+      msg.textContent=''; openConsole();
+    }else{ msg.textContent='Wrong password.'; document.getElementById('pw').select(); }
+  }catch(err){ msg.textContent='Could not reach the server — check your internet.'; }
+  btn.disabled=false;
 });
-/* shrink screenshots before upload so saving is quick */
-function shrink(dataUrl,maxW=1600){
-  return new Promise(res=>{
-    const img=new Image();
-    img.onload=()=>{
-      const s=Math.min(1,maxW/img.width),c=document.createElement('canvas');
-      c.width=Math.round(img.width*s);c.height=Math.round(img.height*s);
-      const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(img,0,0,c.width,c.height);
-      res(c.toDataURL('image/jpeg',0.85));
-    };
-    img.onerror=()=>res(dataUrl);
-    img.src=dataUrl;
-  });
-}
 
 let pendingShot=null; const REMINDER_START_DAY=5;
 const STATUSES=['Pending','In Process','Paid','Disputed','On Hold','Cancelled'];
@@ -287,7 +291,7 @@ document.getElementById('fCharge').addEventListener('input',e=>e.target.classLis
 const zone=document.getElementById('pasteZone'),shotWrap=document.getElementById('shotWrap'),shotImg=document.getElementById('shotImg');
 function setShot(d){pendingShot=d;shotImg.src=d;shotWrap.style.display='block';runOcr(d);}
 function readFile(f){const r=new FileReader();r.onload=e=>setShot(e.target.result);r.readAsDataURL(f);}
-document.addEventListener('paste',e=>{for(const it of e.clipboardData.items){if(it.type.startsWith('image/')){readFile(it.getAsFile());e.preventDefault();return;}}});
+document.addEventListener('paste',e=>{if(document.body.classList.contains('locked'))return;for(const it of e.clipboardData.items){if(it.type.startsWith('image/')){readFile(it.getAsFile());e.preventDefault();return;}}});
 zone.addEventListener('click',()=>zone.focus());
 zone.addEventListener('dragover',e=>{e.preventDefault();zone.classList.add('hot');});
 zone.addEventListener('dragleave',()=>zone.classList.remove('hot'));
@@ -434,7 +438,7 @@ function render(){
     const owners=[...new Set([...ownerNames,o.owner].filter(Boolean))];
     const statuses=[...new Set([...STATUSES,o.status].filter(Boolean))];
     return `<tr>
-      <td>${o.shot?`<img class="thumb" src="${esc(o.shot)}" referrerpolicy="no-referrer" onclick="viewShot(${i})" alt="screenshot">`:'<span class="muted">—</span>'}</td>
+      <td>${o.shot?`<img class="thumb" src="${o.shot}" onclick="viewShot(${i})" alt="screenshot">`:'<span class="muted">—</span>'}</td>
       <td><input class="w-lg" value="${esc(o.bidNo)}" placeholder="—" onchange="editOrder(${i},'bidNo',this.value)"></td>
       <td><input class="w-lg" value="${esc(o.id)}" onchange="editOrder(${i},'id',this.value)"></td>
       <td><input class="w-lg" value="${esc(o.buyer)}" onchange="editOrder(${i},'buyer',this.value)"></td>
@@ -463,14 +467,12 @@ function render(){
   kPct.textContent=(amc.length?Math.round(paid/amc.length*100):0)+'%';
 }
 function editOrder(i,f,v){
-  const o=orders[i]; if(!o)return;
-  if(!needConnection()){render();return;}
-  const old=o[f];
+  const o=orders[i]; if(!o)return; const old=o[f];
   if(f==='value'){o.value=v; if(!o.chargeManual)o.charge=chargeForOrder(o.amc,v);}
   else if(f==='amc'){o.amc=v; if(v!=='yes'){o.charge=0;o.chargeManual=false;} else if(!o.chargeManual){o.charge=gemCharge(o.value).charge;}}
   else if(f==='charge'){ if(o.amc!=='yes'){o.charge=0;} else if(v===''){o.chargeManual=false;o.charge=gemCharge(o.value).charge;} else {o.charge=v;o.chargeManual=true;} }
   else o[f]=typeof v==='string'?v.trim():v;
-  saveOrder(o); render();
+  persistOrders(); render();
   const m=document.getElementById('lastAction');
   if(f==='status'){
     m.textContent=`Order ${o.id} status changed manually: ${old} → ${o.status}`+(isClosed(o)?' — further reminders stopped.':'.');
@@ -478,61 +480,37 @@ function editOrder(i,f,v){
     m.textContent=`Order ${o.id} updated (${f}).`;
   }
 }
-function viewShot(i){window.open(orders[i].shot,'_blank');}
+function viewShot(i){const w=window.open();w.document.write(`<img src="${orders[i].shot}" style="max-width:100%">`);}
 function markPaid(i){editOrder(i,'status','Paid');}
-function deleteOrder(i){
-  if(!needConnection())return;
-  const o=orders[i];
-  if(!confirm(`Delete order ${o.id}?`))return;
-  clearTimeout(saveTimers[o.uid]); delete saveTimers[o.uid];
-  orders.splice(i,1); render();
-  document.getElementById('lastAction').textContent=`Order ${o.id} deleted.`;
-  api({action:'delete',uid:o.uid})
-    .then(()=>setSync('✓ Deleted from Google Sheet'))
-    .catch(e=>setSync('⚠ Delete failed ('+e.message+') — refresh to check','#FFD27A'));
-}
+function deleteOrder(i){if(!confirm(`Delete order ${orders[i].id}?`))return;const id=orders[i].id;orders.splice(i,1);persistOrders();render();document.getElementById('lastAction').textContent=`Order ${id} deleted.`;}
 /* ---------- webhook ---------- */
 function payload(o,stage){return{bidNumber:o.bidNo,orderId:o.id,buyer:o.buyer,buyerLocation:o.location,
   orderDate:o.orderDate,reminderStartDate:reminderStartDate(o.orderDate),
   totalOrderValue:Number(o.value||0),transactionCharge:Number(o.charge||0),chargeSlab:o.chargeManual?'Manual override':gemCharge(o.value).slab,
   payAMC:true,dayNumber:dayNumber(o.orderDate),stage,status:o.status,owner:o.owner,recipients:audienceFor(stage),
-  screenshotUrl:o.shot||null,generatedAt:new Date().toISOString()};}
+  screenshotBase64:o.shot||null,generatedAt:new Date().toISOString()};}
 async function post(data){
   const url=document.getElementById('hookUrl').value.trim(),out=document.getElementById('hookOut');
-  const prev=JSON.stringify(data,null,2);
+  const prev=JSON.stringify(data,(k,v)=>k==='screenshotBase64'&&v?'[base64 image attached]':v,2);
   if(!url){out.textContent='Local mode — payload not sent:\n'+prev;return;}
   try{await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
     out.textContent='Payload posted to webhook:\n'+prev;}
   catch(e){out.textContent='Webhook post failed ('+e.message+'). Payload:\n'+prev;}
 }
 /* ---------- actions ---------- */
-document.getElementById('orderForm').addEventListener('submit',async e=>{
+document.getElementById('orderForm').addEventListener('submit',e=>{
   e.preventDefault();
-  if(!needConnection())return;
-  const id=fOrderId.value.trim();
-  if(orders.some(o=>String(o.id||'').trim().toUpperCase()===id.toUpperCase())){
-    alert(`Order ${id} is already in the tracker, so it was not added again.`);return;}
   if(!pendingShot&&!confirm('No screenshot attached. The screenshot is the primary source — add this order anyway?'))return;
-  const btn=e.target.querySelector('button[type="submit"]'),m=document.getElementById('lastAction');
-  btn.disabled=true;
-  let shot='';
-  if(pendingShot){
-    m.textContent='Uploading screenshot to Google Drive…';
-    try{shot=(await api({action:'upload',dataUrl:await shrink(pendingShot),name:id+'.jpg'})).url;}
-    catch(err){
-      if(!confirm('Screenshot upload failed ('+err.message+'). Add the order without the screenshot?')){btn.disabled=false;m.textContent='Order not added.';return;}
-    }
-  }
   const auto=chargeForOrder(fAmc.value,fValue.value);
   const chargeVal=fAmc.value!=='yes'?0:(fCharge.value===''?auto:fCharge.value);
-  const o={uid:newUid(),bidNo:fBidNo.value.trim(),id,orderDate:fOrderDate.value,
+  const o={bidNo:fBidNo.value.trim(),id:fOrderId.value.trim(),orderDate:fOrderDate.value,
     buyer:fBuyer.value.trim(),location:fLocation.value.trim(),value:fValue.value,
     charge:chargeVal,chargeManual:Number(chargeVal)!==Number(auto),
-    amc:fAmc.value,owner:fOwner.options[fOwner.selectedIndex]?.text||'',status:'Pending',shot};
-  orders.push(o); saveOrder(o);
-  e.target.reset(); btn.disabled=false;
+    amc:fAmc.value,owner:fOwner.options[fOwner.selectedIndex]?.text||'',status:'Pending',shot:pendingShot};
+  orders.push(o); persistOrders(); e.target.reset();
   document.querySelectorAll('input.auto').forEach(el=>el.classList.remove('auto'));
   document.getElementById('clearShot').click(); applyCharge(); render();
+  const m=document.getElementById('lastAction');
   if(o.amc!=='yes'){m.textContent=`Order ${o.id} logged for record only — screenshot does not show Pay AMC, so no reminder will be sent.`;return;}
   const st=stageOf(o);
   if(st==='Awaiting'){m.textContent=`Order ${o.id} (Bid ${o.bidNo||'n/a'}) queued — first reminder scheduled for ${reminderStartDate(o.orderDate)}.`;}
@@ -552,8 +530,7 @@ document.getElementById('saveStake').addEventListener('click',()=>{
   if(bad.length){note(`${bad.length} active row(s) still need a valid name and email.`);return;}
   persistStakeholders();note(`Saved — ${stakeholders.filter(s=>s.active).length} active stakeholder(s) will receive reminders.`);});
 document.getElementById('resetStake').addEventListener('click',()=>{if(!confirm('Reset all stakeholder rows to placeholders?'))return;stakeholders=defaultStakeholders();persistStakeholders();renderStakeholders();note('Reset to placeholder list.');});
-/* ---------- start-up ---------- */
-renderStakeholders(); applyCharge();
-loadAll();
+/* ---------- start-up: show lock screen until the password is confirmed by the Sheet ---------- */
+start();
 </script>
 </body></html>
