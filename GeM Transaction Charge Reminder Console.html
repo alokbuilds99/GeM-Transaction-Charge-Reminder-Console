@@ -178,7 +178,7 @@ function persistOrders(){try{localStorage.setItem('gemOrders',JSON.stringify(ord
   saveToSheet();}
 
 /* ---------- Google Sheet storage: data survives refresh and works on every device ---------- */
-let SHEET_URL=localStorage.getItem('gemSheetUrl')||'';
+let SHEET_URL=localStorage.getItem('gemSheetUrl')||'https://script.google.com/macros/s/AKfycbxr-30KKgL_zlq0HHTvrTCb62_pT-4g6aaJx7q8iQGNEM131Ye2ET7xT7YAc_Zr5RP8qg/exec';
 let sheetReady=false, sheetTimer=null;
 function setSync(msg,color){
   const e=document.getElementById('syncStatus');
